@@ -12,3 +12,6 @@ DOMAIN-SUFFIX,jlrmotor.com
 
 # 西安市民卡
 DOMAIN-SUFFIX,xaykt.com
+
+# 英伟达
+DOMAIN-SUFFIX,nvidia.com
