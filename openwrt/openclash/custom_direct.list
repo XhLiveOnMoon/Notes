@@ -18,3 +18,9 @@ DOMAIN-SUFFIX,nvidia.com
 
 # 西安秦华燃气
 DOMAIN-SUFFIX,xianqqvb.com
+
+# UHD影视
+DOMAIN,www.uhdnow.com,DIRECT
+DOMAIN,smart.uhdnow.com,DIRECT
+DOMAIN,speed.uhdnow.com,DIRECT
+DOMAIN-SUFFIX,uhdnow.online,DIRECT
