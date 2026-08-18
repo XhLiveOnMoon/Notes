@@ -20,7 +20,10 @@ DOMAIN-SUFFIX,nvidia.com
 DOMAIN-SUFFIX,xianqqvb.com
 
 # UHD影视
-DOMAIN,www.uhdnow.com,DIRECT
-DOMAIN,smart.uhdnow.com,DIRECT
-DOMAIN,speed.uhdnow.com,DIRECT
-DOMAIN-SUFFIX,uhdnow.online,DIRECT
+DOMAIN,www.uhdnow.com
+DOMAIN,smart.uhdnow.com
+DOMAIN,speed.uhdnow.com
+DOMAIN-SUFFIX,uhdnow.online
+
+# 西安交警小程序
+DOMAIN-SUFFIX,xianjiaojing.com
