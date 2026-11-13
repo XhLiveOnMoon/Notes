@@ -136,6 +136,26 @@ def human_size(value):
     return "未知大小"
 
 
+def validate_qbit_add_response(response):
+    body = response.text.strip()
+    if body.lower() in ("", "ok."):
+        return
+
+    try:
+        result = response.json()
+    except ValueError:
+        raise RuntimeError(f"qBittorrent 添加任务返回异常：{body[:150]}")
+
+    if isinstance(result, dict):
+        success_count = int(result.get("success_count", 0))
+        pending_count = int(result.get("pending_count", 0))
+        failure_count = int(result.get("failure_count", 0))
+        if failure_count == 0 and (success_count > 0 or pending_count > 0):
+            return
+
+    raise RuntimeError(f"qBittorrent 添加任务失败：{body[:150]}")
+
+
 def add_qbit_url(url):
     if not url.startswith(("magnet:", "http://", "https://")):
         raise ValueError("只接受 magnet:、HTTP 或 HTTPS 下载链接。")
@@ -143,8 +163,7 @@ def add_qbit_url(url):
         "POST", "/api/v2/torrents/add",
         data={"urls": url, "category": QBIT_CATEGORY},
     )
-    if response.text.strip().lower() not in ("", "ok."):
-        raise RuntimeError(f"qBittorrent 未接受任务：{response.text[:150]}")
+    validate_qbit_add_response(response)
 
 
 def load_state():
@@ -279,10 +298,11 @@ async def incoming_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tg_file = await document.get_file()
         content = await tg_file.download_as_bytearray()
         files = {"torrents": (document.file_name, bytes(content), "application/x-bittorrent")}
-        await asyncio.to_thread(
+        response = await asyncio.to_thread(
             qbit_request, "POST", "/api/v2/torrents/add",
             data={"category": QBIT_CATEGORY}, files=files,
         )
+        validate_qbit_add_response(response)
         await update.message.reply_text("种子文件已提交给 qBittorrent。")
     except Exception as exc:
         log.exception("torrent upload failed")
