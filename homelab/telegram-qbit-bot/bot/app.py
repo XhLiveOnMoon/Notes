@@ -37,6 +37,10 @@ QBIT_PASS = os.environ["QBIT_PASSWORD"]
 QBIT_CATEGORY = os.environ.get("QBIT_CATEGORY", "telegram-bot")
 SEARCH_LIMIT = max(1, min(20, int(os.environ.get("SEARCH_LIMIT", "10"))))
 POLL_SECONDS = max(20, int(os.environ.get("POLL_INTERVAL_SECONDS", "60")))
+IDLE_POLL_SECONDS = max(
+    POLL_SECONDS,
+    int(os.environ.get("IDLE_POLL_INTERVAL_SECONDS", "300")),
+)
 STATE_FILE = Path(os.environ.get("STATE_PATH", "/data/state.json"))
 
 http = requests.Session()
@@ -311,16 +315,20 @@ async def incoming_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def notify_completed(app: Application):
     while True:
+        next_interval = IDLE_POLL_SECONDS
         try:
             response = await asyncio.to_thread(qbit_request, "GET", "/api/v2/torrents/info")
             torrents = response.json()
             current = {}
+            has_incomplete_task = False
             for torrent in torrents:
                 torrent_hash = torrent.get("hash", "")
                 if not torrent_hash:
                     continue
                 progress = float(torrent.get("progress", 0))
                 current[torrent_hash] = progress
+                if progress < 1.0:
+                    has_incomplete_task = True
                 old_progress = previous_progress.get(torrent_hash)
                 # Notify only on a later transition to 100%; first-seen tasks form the baseline.
                 if old_progress is not None and old_progress < 1.0 <= progress:
@@ -332,9 +340,12 @@ async def notify_completed(app: Application):
                         )
             previous_progress.update(current)
             save_state()
+            next_interval = POLL_SECONDS if has_incomplete_task else IDLE_POLL_SECONDS
         except Exception:
+            # Keep the normal retry cadence after errors; do not enter a long idle sleep.
             log.exception("completion polling failed")
-        await asyncio.sleep(POLL_SECONDS)
+            next_interval = POLL_SECONDS
+        await asyncio.sleep(next_interval)
 
 
 async def post_init(app: Application):
