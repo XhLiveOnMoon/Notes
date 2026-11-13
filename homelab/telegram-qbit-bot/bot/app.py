@@ -67,7 +67,12 @@ def qbit_login(force=False):
             timeout=15,
         )
         response.raise_for_status()
-        if response.text.strip() != "Ok.":
+        if response.status_code not in (200, 204):
+            raise RuntimeError(
+                f"qBittorrent login failed: HTTP {response.status_code}, "
+                f"{response.text[:120]}"
+            )
+        if response.status_code == 200 and response.text.strip() != "Ok.":
             raise RuntimeError(f"qBittorrent login failed: {response.text[:120]}")
         last_qbit_login = time.time()
 
@@ -313,14 +318,27 @@ async def notify_completed(app: Application):
 
 
 async def post_init(app: Application):
-    app.create_task(notify_completed(app))
+    app.bot_data["completion_task"] = asyncio.create_task(
+        notify_completed(app),
+        name="completion-poller",
+    )
+
+
+async def post_stop(app: Application):
+    task = app.bot_data.get("completion_task")
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def main():
     if not ALLOWED_USERS:
         raise RuntimeError("TELEGRAM_ALLOWED_USER_IDS is empty; configure your numeric Telegram user ID.")
     load_state()
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("search", search))
     app.add_handler(CommandHandler("list", list_tasks))
