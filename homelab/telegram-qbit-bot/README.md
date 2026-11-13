@@ -24,6 +24,30 @@ A lightweight, self-hosted Telegram bot that searches the Jackett indexers you c
 
 The bot and Jackett share the Compose network. The bot reaches Jackett at `http://jackett:9117`. The bot reaches qBittorrent using `QBIT_BASE_URL`.
 
+## 3. Files and storage layout
+
+For a split system-disk / media-disk setup, keep this Compose project directory on the LXC system disk. The default relative paths (`./data/jackett`, `./data/bot`, and `./data/jackett-downloads`) will then keep Jackett configuration and bot state on the system disk. **Do not point these paths at `/data/media`.**
+
+The bot does not need a media-directory bind mount: it submits tasks through qBittorrent's WebUI API. Keep the existing qBittorrent container's download/save path mapped to your HDD-backed `/data/media` directory. qBittorrent—not this bot—writes the downloaded media to that location. No changes to Jellyfin or its existing media mount are required.
+
+Example layout (the project path is illustrative; use the actual directory where you cloned the repository):
+
+```text
+LXC system disk
+└── /opt/telegram-qbit-bot/
+    ├── docker-compose.yml
+    ├── .env
+    └── data/
+        ├── jackett/             # Jackett settings and indexers
+        ├── jackett-downloads/   # Optional Jackett blackhole workflow
+        └── bot/                 # Bot state
+
+HDD mounted in LXC
+└── /data/media/                 # Existing qBittorrent download/save location
+```
+
+The `JACKETT_DOWNLOADS_PATH` mount is only for Jackett's optional blackhole workflow; it is not qBittorrent's download folder. You can leave it at the default on the system disk if you do not use that workflow.
+
 ## 3. Files
 
 ```text
@@ -39,7 +63,7 @@ telegram-qbit-bot/
     └── app.py
 ```
 
-Runtime data is stored under the paths configured by `JACKETT_CONFIG_PATH`, `JACKETT_DOWNLOADS_PATH`, and `BOT_DATA_PATH`. The real `.env` file and runtime data are ignored by Git.
+Runtime data is stored under the paths configured by `JACKETT_CONFIG_PATH`, `JACKETT_DOWNLOADS_PATH`, and `BOT_DATA_PATH`. With the project directory on the system disk, the defaults keep these files there. The real `.env` file and runtime data are ignored by Git.
 
 ## 4. All configurable parameters
 
