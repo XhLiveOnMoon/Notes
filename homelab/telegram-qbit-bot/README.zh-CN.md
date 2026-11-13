@@ -24,6 +24,30 @@
 
 机器人和 Jackett 处于同一个 Compose 网络，机器人通过 `http://jackett:9117` 访问 Jackett。机器人通过 `QBIT_BASE_URL` 访问现有 qBittorrent。
 
+## 3. 文件结构和存储分离
+
+如果你的 LXC 已经把系统盘和媒体 HDD 分开，建议将本项目整个目录放在 **LXC 系统盘**。这样默认相对路径 `./data/jackett`、`./data/bot` 和 `./data/jackett-downloads` 都会落在系统盘，用来保存 Jackett 配置和机器人状态。**不要把这些配置目录指向 `/data/media`。**
+
+机器人通过 qBittorrent WebUI API 添加任务，不需要挂载媒体目录。保持你现有 qBittorrent 容器的下载保存路径配置，让它继续映射到 HDD 上的 `/data/media` 即可。实际下载文件由 qBittorrent 写入该目录，机器人不直接读写媒体文件，也不需要修改 Jellyfin 或它现有的媒体挂载。
+
+示例目录结构（`/opt/telegram-qbit-bot` 只是示例，请替换成你实际 clone 仓库的位置）：
+
+```text
+LXC 系统盘
+└── /opt/telegram-qbit-bot/
+    ├── docker-compose.yml
+    ├── .env
+    └── data/
+        ├── jackett/             # Jackett 配置和索引站点设置
+        ├── jackett-downloads/   # Jackett 可选 blackhole 工作流目录
+        └── bot/                 # 机器人状态文件
+
+LXC 内挂载的 HDD
+└── /data/media/                 # 现有 qBittorrent 下载/保存目录
+```
+
+注意：`JACKETT_DOWNLOADS_PATH` 是 Jackett 可选 blackhole 工作流使用的目录，不是 qBittorrent 的下载目录。不使用该工作流时，保持默认在系统盘即可。
+
 ## 3. 文件结构
 
 ```text
@@ -39,7 +63,7 @@ telegram-qbit-bot/
     └── app.py
 ```
 
-运行数据保存在 `JACKETT_CONFIG_PATH`、`JACKETT_DOWNLOADS_PATH` 和 `BOT_DATA_PATH` 指定的宿主机目录。真正使用的 `.env` 和运行数据已加入 Git 忽略规则，不应提交到仓库。
+运行数据保存在 `JACKETT_CONFIG_PATH`、`JACKETT_DOWNLOADS_PATH` 和 `BOT_DATA_PATH` 指定的宿主机目录。只要本项目目录放在系统盘，默认路径就会将这些配置和状态保存在系统盘。真正使用的 `.env` 和运行数据已加入 Git 忽略规则，不应提交到仓库。
 
 ## 4. 所有需要配置的参数
 
