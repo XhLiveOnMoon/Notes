@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import logging
 import os
 import re
@@ -7,7 +8,6 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from urllib.parse import urljoin
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -42,8 +42,7 @@ STATE_FILE = Path(os.environ.get("STATE_PATH", "/data/state.json"))
 http = requests.Session()
 qbit_lock = threading.Lock()
 search_cache = {}
-known_tasks = set()
-notified_tasks = set()
+previous_progress = {}
 last_qbit_login = 0.0
 
 
@@ -95,9 +94,7 @@ def jackett_search(query):
     for item in root.findall(".//item"):
         title = item.findtext("title") or "未命名资源"
         link = item.findtext("link") or ""
-        seeders = ""
-        size = ""
-        magnet = ""
+        seeders, size, magnet = "", "", ""
         for attr in item.findall("{*}attr"):
             name = attr.attrib.get("name", "").lower()
             value = attr.attrib.get("value", "")
@@ -110,15 +107,15 @@ def jackett_search(query):
         if not magnet and link.startswith("magnet:"):
             magnet = link
         download_url = magnet or link
-        if not download_url:
-            continue
-        results.append({
-            "title": title,
-            "url": download_url,
-            "seeders": seeders,
-            "size": size,
-        })
-    results.sort(key=lambda row: int(row["seeders"]) if row["seeders"].isdigit() else -1, reverse=True)
+        if download_url.startswith(("magnet:", "http://", "https://")):
+            results.append({
+                "title": title, "url": download_url,
+                "seeders": seeders, "size": size,
+            })
+    results.sort(
+        key=lambda row: int(row["seeders"]) if row["seeders"].isdigit() else -1,
+        reverse=True,
+    )
     return results[:SEARCH_LIMIT]
 
 
@@ -135,31 +132,30 @@ def human_size(value):
 
 
 def add_qbit_url(url):
-    if not (url.startswith("magnet:") or url.startswith("http://") or url.startswith("https://")):
+    if not url.startswith(("magnet:", "http://", "https://")):
         raise ValueError("只接受 magnet:、HTTP 或 HTTPS 下载链接。")
-    data = {"urls": url, "category": QBIT_CATEGORY}
-    qbit_request("POST", "/api/v2/torrents/add", data=data)
-    return True
+    response = qbit_request(
+        "POST", "/api/v2/torrents/add",
+        data={"urls": url, "category": QBIT_CATEGORY},
+    )
+    if response.text.strip().lower() not in ("", "ok."):
+        raise RuntimeError(f"qBittorrent 未接受任务：{response.text[:150]}")
 
 
 def load_state():
-    global known_tasks, notified_tasks
+    global previous_progress
     try:
-        import json
         data = json.loads(STATE_FILE.read_text())
-        known_tasks = set(data.get("known", []))
-        notified_tasks = set(data.get("notified", []))
+        previous_progress = {
+            str(key): float(value) for key, value in data.get("progress", {}).items()
+        }
     except Exception:
-        known_tasks, notified_tasks = set(), set()
+        previous_progress = {}
 
 
 def save_state():
-    import json
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps({
-        "known": sorted(known_tasks),
-        "notified": sorted(notified_tasks),
-    }))
+    STATE_FILE.write_text(json.dumps({"progress": previous_progress}))
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -176,20 +172,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorized(update):
         return await deny(update)
-    query = " ".join(context.args).strip()
-    if not query:
+    query_text = " ".join(context.args).strip()
+    if not query_text:
         return await update.message.reply_text("用法：/search 电影或电视剧名称")
     status = await update.message.reply_text("正在查询 Jackett 索引站点…")
     try:
-        results = await asyncio.to_thread(jackett_search, query)
+        results = await asyncio.to_thread(jackett_search, query_text)
         if not results:
             return await status.edit_text("没有找到结果。请检查 Jackett 中是否已配置并启用索引站点。")
         token = str(time.time_ns())
         search_cache[token] = results
-        # Keep the in-memory cache bounded.
         while len(search_cache) > 30:
             search_cache.pop(next(iter(search_cache)))
-        lines = [f"搜索：<b>{html.escape(query)}</b>", ""]
+        lines = [f"搜索：<b>{html.escape(query_text)}</b>", ""]
         keyboard = []
         for index, item in enumerate(results):
             lines.append(
@@ -200,8 +195,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"下载 #{index + 1}", callback_data=f"dl:{token}:{index}"
             )])
         await status.edit_text(
-            "\n\n".join(lines),
-            parse_mode=ParseMode.HTML,
+            "\n\n".join(lines), parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(keyboard),
             disable_web_page_preview=True,
         )
@@ -233,9 +227,7 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorized(update):
         return await deny(update)
     try:
-        response = await asyncio.to_thread(
-            qbit_request, "GET", "/api/v2/torrents/info"
-        )
+        response = await asyncio.to_thread(qbit_request, "GET", "/api/v2/torrents/info")
         torrents = response.json()
         if not torrents:
             return await update.message.reply_text("当前没有下载任务。")
@@ -254,8 +246,8 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def incoming_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorized(update):
         return await deny(update)
-    text = (update.message.text or "").strip()
-    magnet_match = re.search(r"magnet:\?[^\s]+", text)
+    message_text = (update.message.text or "").strip()
+    magnet_match = re.search(r"magnet:\?[^\s]+", message_text)
     if magnet_match:
         url = magnet_match.group(0).rstrip("，。；;")
         try:
@@ -264,9 +256,9 @@ async def incoming_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as exc:
             await update.message.reply_text(f"添加失败：{str(exc)[:300]}")
         return
-    if text.startswith("http://") or text.startswith("https://"):
+    if message_text.startswith(("http://", "https://")):
         try:
-            await asyncio.to_thread(add_qbit_url, text)
+            await asyncio.to_thread(add_qbit_url, message_text)
             await update.message.reply_text("下载链接已提交给 qBittorrent。")
         except Exception as exc:
             await update.message.reply_text(f"添加失败：{str(exc)[:300]}")
@@ -276,15 +268,15 @@ async def incoming_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorized(update):
         return await deny(update)
     document = update.message.document
-    if not document or not document.file_name.lower().endswith(".torrent"):
+    if not document or not (document.file_name or "").lower().endswith(".torrent"):
         return await update.message.reply_text("目前只接收 .torrent 文件。")
     try:
         tg_file = await document.get_file()
         content = await tg_file.download_as_bytearray()
         files = {"torrents": (document.file_name, bytes(content), "application/x-bittorrent")}
-        data = {"category": QBIT_CATEGORY}
         await asyncio.to_thread(
-            qbit_request, "POST", "/api/v2/torrents/add", data=data, files=files
+            qbit_request, "POST", "/api/v2/torrents/add",
+            data={"category": QBIT_CATEGORY}, files=files,
         )
         await update.message.reply_text("种子文件已提交给 qBittorrent。")
     except Exception as exc:
@@ -297,21 +289,23 @@ async def notify_completed(app: Application):
         try:
             response = await asyncio.to_thread(qbit_request, "GET", "/api/v2/torrents/info")
             torrents = response.json()
-            current = {t.get("hash", "") for t in torrents if t.get("hash")}
-            # First poll seeds the baseline, avoiding notifications for old completed jobs.
-            if not known_tasks:
-                known_tasks.update(current)
-                save_state()
+            current = {}
             for torrent in torrents:
                 torrent_hash = torrent.get("hash", "")
                 if not torrent_hash:
                     continue
-                if torrent.get("state") == "uploading" and torrent_hash not in known_tasks and torrent_hash not in notified_tasks:
+                progress = float(torrent.get("progress", 0))
+                current[torrent_hash] = progress
+                old_progress = previous_progress.get(torrent_hash)
+                # Notify only on a later transition to 100%; first-seen tasks form the baseline.
+                if old_progress is not None and old_progress < 1.0 <= progress:
                     name = html.escape(torrent.get("name", "任务")[:150])
                     for user_id in ALLOWED_USERS:
-                        await app.bot.send_message(user_id, f"下载完成：<b>{name}</b>", parse_mode=ParseMode.HTML)
-                    notified_tasks.add(torrent_hash)
-                known_tasks.add(torrent_hash)
+                        await app.bot.send_message(
+                            user_id, f"下载完成：<b>{name}</b>",
+                            parse_mode=ParseMode.HTML,
+                        )
+            previous_progress.update(current)
             save_state()
         except Exception:
             log.exception("completion polling failed")
